@@ -24,6 +24,7 @@ import type {
   Meeting,
   ParticipantResponse,
 } from '../types/meeting.ts';
+import { MAX_SLOTS_PER_MEETING } from '../utils/schedule.ts';
 
 function toSafeId(raw: string, prefix: string): string {
   const cleaned = raw
@@ -51,7 +52,7 @@ function sanitizeSlots(
   const clean: Record<string, AvailabilityStatus> = {};
   let count = 0;
   for (const [key, val] of Object.entries(slots)) {
-    if (count >= 350) break;
+    if (count >= MAX_SLOTS_PER_MEETING) break;
     if (
       typeof key === 'string' &&
       key.length > 0 &&
@@ -170,7 +171,7 @@ export async function createMeetingInFirestore(payload: {
   const user = auth.currentUser;
   if (!user || !isUgrEmail(user.email)) {
     throw new Error(
-      'Debes iniciar sesión con tu correo de la UGR (@ugr.es o @go.ugr.es) para crear una reunión.'
+      'Debes iniciar sesión con tu correo de la UGR (@ugr.es, @go.ugr.es o @correo.ugr.es) para crear una reunión.'
     );
   }
 
@@ -272,7 +273,7 @@ export async function updateMeetingInFirestore(
   const user = auth.currentUser;
   if (!user || !isUgrEmail(user.email)) {
     throw new Error(
-      'Debes iniciar sesión con tu correo de la UGR (@ugr.es o @go.ugr.es) para editar una reunión.'
+      'Debes iniciar sesión con tu correo de la UGR (@ugr.es, @go.ugr.es o @correo.ugr.es) para editar una reunión.'
     );
   }
 
@@ -362,7 +363,7 @@ export async function saveParticipantAvailabilityInFirestore(
   const user = auth.currentUser;
   if (!user || !isUgrEmail(user.email)) {
     throw new Error(
-      'Debes iniciar sesión con tu correo de la UGR (@ugr.es o @go.ugr.es) para guardar tu disponibilidad.'
+      'Debes iniciar sesión con tu correo de la UGR (@ugr.es, @go.ugr.es o @correo.ugr.es) para guardar tu disponibilidad.'
     );
   }
 

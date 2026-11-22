@@ -1,10 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
-import {
-  doc,
-  getDocFromServer,
-  getFirestore,
-} from 'firebase/firestore';
+import { getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
@@ -28,60 +24,51 @@ export enum OperationType {
   WRITE = 'write',
 }
 
-export interface FirestoreErrorInfo {
-  error: string;
-  operationType: OperationType;
-  path: string | null;
-  authInfo: {
-    userId?: string | null;
-    email?: string | null;
-    emailVerified?: boolean | null;
-    isAnonymous?: boolean | null;
-    tenantId?: string | null;
-    providerInfo?: {
-      providerId?: string | null;
-      email?: string | null;
-    }[];
-  };
+const FRIENDLY_MESSAGES: Record<OperationType, string> = {
+  [OperationType.CREATE]: 'No se pudo crear el registro.',
+  [OperationType.UPDATE]: 'No se pudieron guardar los cambios.',
+  [OperationType.DELETE]: 'No se pudo eliminar.',
+  [OperationType.LIST]: 'No se pudieron cargar los datos.',
+  [OperationType.GET]: 'No se pudieron cargar los datos.',
+  [OperationType.WRITE]: 'No se pudieron guardar los cambios.',
+};
+
+function friendlyReason(code: string | undefined): string {
+  switch (code) {
+    case 'permission-denied':
+      return 'No tienes permiso para esta acción. Comprueba que has iniciado sesión con tu cuenta de la UGR.';
+    case 'unauthenticated':
+      return 'Tu sesión ha caducado. Vuelve a iniciar sesión.';
+    case 'unavailable':
+    case 'deadline-exceeded':
+      return 'No hay conexión con el servidor. Inténtalo de nuevo en unos segundos.';
+    case 'not-found':
+      return 'La reunión ya no existe.';
+    case 'resource-exhausted':
+      return 'Se ha superado el límite de uso. Inténtalo más tarde.';
+    default:
+      return 'Inténtalo de nuevo y, si el problema continúa, recarga la página.';
+  }
 }
 
+/**
+ * Registra el detalle técnico en consola (sin datos personales) y lanza un
+ * error con un mensaje en castellano apto para mostrarlo en la interfaz.
+ */
 export function handleFirestoreError(
   error: unknown,
   operationType: OperationType,
   path: string | null
 ): never {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo:
-        auth.currentUser?.providerData?.map((provider) => ({
-          providerId: provider.providerId,
-          email: provider.email,
-        })) || [],
-    },
+  const code =
+    error && typeof error === 'object' && 'code' in error
+      ? String((error as { code: unknown }).code)
+      : undefined;
+  console.error('Firestore error', {
     operationType,
     path,
-  };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+    code,
+    message: error instanceof Error ? error.message : String(error),
+  });
+  throw new Error(`${FRIENDLY_MESSAGES[operationType]} ${friendlyReason(code)}`);
 }
-
-async function testConnection() {
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message.includes('the client is offline')
-    ) {
-      console.error('Please check your Firebase configuration.');
-    }
-  }
-}
-
-testConnection();

@@ -10,7 +10,8 @@
    - `slots`: map of at most 350 entries
 4. **Immutable Ownership & Timestamps**: `organizerUid`, `ownerUid`, `meetingId`, `id`, and `createdAt` cannot be modified after creation.
 5. **Verified UGR Auth for Writes**: All create/update/delete operations require `request.auth != null && request.auth.token.email_verified == true` and an institutional UGR email (`@ugr.es`, `@go.ugr.es`, or `@correo.ugr.es`).
-6. **Public Shared Readability (No PII)**: Meetings and participant availability choices contain no emails, phones, or addresses and are readable via `visibility == 'shared'` / `isShared == true` so everyone with access can view group consensus.
+6. **UGR-only Readability**: Meetings and participants include personal data (participants' real names, roles and notes). All `get`/`list` operations require a verified institutional UGR account (`isUgrUser()`) in addition to `visibility == 'shared'` / `isShared == true`.
+7. **Slot bounds**: a participant's `slots` map holds at most 448 entries (14 days × 16 hours × 2 slots/hour, the largest grid a meeting can have).
 
 ## 2. Adversarial "Dirty Dozen" Payloads (Expected: PERMISSION_DENIED)
 1. **Unauthenticated Meeting Creation**: `create /meetings/m1` with `request.auth == null`.
@@ -25,3 +26,4 @@
 10. **Participant Owner Spoofing**: `create /meetings/m1/participants/p1` with `ownerUid: "victim-uid"`.
 11. **Unauthorized Availability Overwrite**: `update /meetings/m1/participants/p1` by a user who is neither `ownerUid` nor `organizerUid`.
 12. **Blanket List Without Visibility Filter**: `list /meetings` on documents where `visibility != 'shared'`.
+13. **Anonymous Read**: `get`/`list` on `/meetings` or `/meetings/m1/participants` with `request.auth == null` or a non-UGR account.

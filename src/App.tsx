@@ -39,7 +39,9 @@ import {
 } from './services/firestoreMeetings.ts';
 import {
   computeAllConsensus,
+  filterSlotsForMeeting,
   formatDateLong,
+  getMeetingEndTime,
   getTopRecommendedSlots,
 } from './utils/schedule.ts';
 import type {
@@ -80,7 +82,7 @@ export default function App() {
         void signOut(auth);
         setUser(null);
         setError(
-          'Solo se permite el acceso con una cuenta de correo de la UGR (@ugr.es o @go.ugr.es).'
+          'Solo se permite el acceso con una cuenta de correo de la UGR (@ugr.es, @go.ugr.es o @correo.ugr.es).'
         );
       } else {
         setUser(firebaseUser);
@@ -90,8 +92,19 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  // 2. Real-time Firestore subscription to all shared meetings
+  // 2. Real-time Firestore subscription to all shared meetings.
+  // Las reglas solo permiten leer a cuentas UGR verificadas, así que no se
+  // suscribe nada hasta que hay sesión.
+  const userUid = user?.uid ?? null;
   useEffect(() => {
+    if (!authReady) return;
+    if (!userUid) {
+      setRawMeetings([]);
+      setParticipantsByMeeting({});
+      setActiveMeetingId(null);
+      setIsLoading(false);
+      return;
+    }
     setIsLoading(true);
     const unsub = subscribeSharedMeetings(
       (list) => {
@@ -116,11 +129,11 @@ export default function App() {
     );
 
     return () => unsub();
-  }, []);
+  }, [authReady, userUid]);
 
   // 3. Real-time Firestore subscription to participants of the active meeting
   useEffect(() => {
-    if (!activeMeetingId) return;
+    if (!activeMeetingId || !userUid) return;
     const unsub = subscribeMeetingParticipants(
       activeMeetingId,
       (participants) => {
@@ -134,7 +147,7 @@ export default function App() {
       }
     );
     return () => unsub();
-  }, [activeMeetingId]);
+  }, [activeMeetingId, userUid]);
 
   const meetings: Meeting[] = useMemo(
     () =>
@@ -175,8 +188,8 @@ export default function App() {
   );
 
   const topSlots = useMemo(
-    () => getTopRecommendedSlots(consensusList, 1),
-    [consensusList]
+    () => (activeMeeting ? getTopRecommendedSlots(activeMeeting, 1) : []),
+    [activeMeeting]
   );
 
   const selectedConsensus = useMemo(() => {
@@ -199,17 +212,27 @@ export default function App() {
       if (!isUgrEmail(cred.user.email)) {
         await signOut(auth);
         setError(
-          'Solo se permite el acceso con una cuenta de correo de la UGR (@ugr.es o @go.ugr.es).'
+          'Solo se permite el acceso con una cuenta de correo de la UGR (@ugr.es, @go.ugr.es o @correo.ugr.es).'
         );
         return null;
       }
       return cred.user;
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : 'No se pudo iniciar sesión con tu cuenta de la UGR.'
-      );
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? String((err as { code: unknown }).code)
+          : '';
+      // Cerrar la ventana emergente no es un error para el usuario.
+      if (
+        code !== 'auth/popup-closed-by-user' &&
+        code !== 'auth/cancelled-popup-request'
+      ) {
+        setError(
+          code === 'auth/popup-blocked'
+            ? 'El navegador ha bloqueado la ventana de inicio de sesión. Permite las ventanas emergentes para este sitio e inténtalo de nuevo.'
+            : 'No se pudo iniciar sesión con tu cuenta de la UGR. Inténtalo de nuevo.'
+        );
+      }
       return null;
     }
   }, []);
@@ -281,11 +304,21 @@ export default function App() {
     slots: Record<string, AvailabilityStatus>;
   }) => {
     if (!activeMeeting) return;
-    await saveParticipantAvailabilityInFirestore(activeMeeting.id, payload);
+    await saveParticipantAvailabilityInFirestore(activeMeeting.id, {
+      ...payload,
+      // Descarta franjas de fechas u horas que el organizador ya ha quitado.
+      slots: filterSlotsForMeeting(activeMeeting, payload.slots),
+    });
   };
 
   const handleRemoveParticipant = async (participantId: string) => {
     if (!activeMeeting) return;
+    const target = activeMeeting.participants.find((p) => p.id === participantId);
+    const isSelf = target?.ownerUid === user?.uid;
+    const question = isSelf
+      ? '¿Quieres retirarte de esta reunión? Se borrará tu disponibilidad.'
+      : `¿Quieres quitar a ${target?.name ?? 'esta persona'} de la reunión? Se borrará su disponibilidad.`;
+    if (!window.confirm(question)) return;
     setError(null);
     try {
       await removeParticipantInFirestore(activeMeeting.id, participantId);
@@ -304,9 +337,24 @@ export default function App() {
   };
 
   const handleDeleteMeeting = async (meetingId: string) => {
-    await deleteMeetingInFirestore(meetingId);
-    if (activeMeetingId === meetingId) {
-      setSelectedSlotId(null);
+    const target = meetings.find((m) => m.id === meetingId);
+    if (
+      !window.confirm(
+        `¿Seguro que quieres eliminar «${target?.title ?? 'esta reunión'}»? Se borrarán también las respuestas de todos los participantes. No se puede deshacer.`
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    try {
+      await deleteMeetingInFirestore(meetingId);
+      if (activeMeetingId === meetingId) {
+        setSelectedSlotId(null);
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'No se pudo eliminar la reunión.'
+      );
     }
   };
 
@@ -497,7 +545,7 @@ export default function App() {
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleDeleteMeeting(m.id);
+                            void handleDeleteMeeting(m.id);
                           }}
                           aria-label={`Eliminar ${m.title}`}
                           title="Eliminar reunión"
@@ -584,7 +632,7 @@ export default function App() {
           )}
 
           {/* Workspace View Mode Bar */}
-          {!isLoading && (
+          {!isLoading && user && (
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div
                 role="tablist"
@@ -630,7 +678,34 @@ export default function App() {
             </div>
           )}
 
-          {isLoading ? (
+          {authReady && !user ? (
+            <div className="bg-white border border-slate-200/90 rounded-xl p-12 text-center">
+              <h1 className="text-xl font-semibold text-[#0B1F3A]">
+                Accede con tu cuenta de la UGR
+              </h1>
+              <p className="mt-2 text-sm text-slate-500 max-w-md mx-auto">
+                Las reuniones y la disponibilidad de los participantes solo son visibles para cuentas institucionales (@ugr.es, @go.ugr.es o @correo.ugr.es).
+              </p>
+              <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsHelpOpen(true)}
+                  className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-[#0B1F3A] bg-white border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer"
+                >
+                  <HelpCircle className="w-4 h-4" />
+                  <span>Cómo funciona</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSignIn}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-[#0B1F3A] rounded-lg hover:bg-[#132F54] cursor-pointer"
+                >
+                  <LogIn className="w-4 h-4" />
+                  <span>Acceder con correo UGR</span>
+                </button>
+              </div>
+            </div>
+          ) : isLoading ? (
             <div className="space-y-6" aria-busy="true">
               <div className="bg-white border border-slate-200/90 rounded-xl p-6 h-44 animate-pulse" />
               <div className="bg-white border border-slate-200/90 rounded-xl p-6 h-72 animate-pulse" />
@@ -775,7 +850,10 @@ export default function App() {
                           {formatDateLong(confirmedConsensus.slot.date)} ·{' '}
                           <span className="font-mono tabular-nums">
                             {confirmedConsensus.slot.startTime} –{' '}
-                            {confirmedConsensus.slot.endTime}
+                            {getMeetingEndTime(
+                            activeMeeting,
+                            confirmedConsensus.slot.startTime
+                          )}
                           </span>
                         </div>
                         {activeMeeting.confirmedNote && (

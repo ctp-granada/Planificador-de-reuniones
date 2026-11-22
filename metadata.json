@@ -1,6 +1,6 @@
 {
-  "name": "Meridian",
+  "name": "Planificador de reuniones",
   "description": "Herramienta clínica y profesional para planificar reuniones de grupo con franjas disponibles, adaptables y no disponibles.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }
