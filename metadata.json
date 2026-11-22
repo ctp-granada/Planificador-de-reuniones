@@ -1,6 +1,6 @@
 {
   "name": "Planificador de reuniones",
-  "description": "Herramienta clínica y profesional para planificar reuniones de grupo con franjas disponibles, adaptables y no disponibles.",
+  "description": "Herramienta para planificar reuniones",
   "requestFramePermissions": [],
   "majorCapabilities": []
 }

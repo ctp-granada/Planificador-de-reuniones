@@ -118,7 +118,7 @@ export const SlidingSlotDrawer: React.FC<SlidingSlotDrawerProps> = ({
                   }}
                   className="text-xs font-medium text-slate-500 hover:text-[#0B1F3A] whitespace-nowrap shrink-0 cursor-pointer"
                 >
-                  Editar
+                  Mis preferencias
                 </button>
               )}
             </li>

@@ -13,6 +13,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  SlidersHorizontal,
   Trash2,
   X,
 } from 'lucide-react';
@@ -74,6 +75,11 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
+
+  const invitedMeetingId = useMemo(
+    () => new URLSearchParams(window.location.search).get('reunion'),
+    []
+  );
 
   // 1. Track Firebase Auth state and enforce institutional UGR email
   useEffect(() => {
@@ -222,14 +228,44 @@ export default function App() {
         err && typeof err === 'object' && 'code' in err
           ? String((err as { code: unknown }).code)
           : '';
+      const rawMsg = err instanceof Error ? err.message : String(err);
+
       // Cerrar la ventana emergente no es un error para el usuario.
       if (
-        code !== 'auth/popup-closed-by-user' &&
-        code !== 'auth/cancelled-popup-request'
+        code === 'auth/popup-closed-by-user' ||
+        code === 'auth/cancelled-popup-request'
+      ) {
+        return null;
+      }
+
+      console.error('Firebase Auth error', { code, message: rawMsg });
+
+      if (
+        code === 'auth/unauthorized-domain' ||
+        rawMsg.includes('auth/unauthorized-domain')
+      ) {
+        const host = window.location.hostname;
+        setError(
+          `El dominio actual (${host}) no está autorizado en Firebase Authentication. Añádelo en Firebase Console → Authentication → Settings → Authorized domains.`
+        );
+      } else if (
+        code === 'auth/operation-not-allowed' ||
+        rawMsg.includes('auth/operation-not-allowed')
       ) {
         setError(
-          code === 'auth/popup-blocked'
-            ? 'El navegador ha bloqueado la ventana de inicio de sesión. Permite las ventanas emergentes para este sitio e inténtalo de nuevo.'
+          'El inicio de sesión con Google no está activado en Firebase. Actívalo en Firebase Console → Authentication → Sign-in method → Google.'
+        );
+      } else if (
+        code === 'auth/popup-blocked' ||
+        rawMsg.includes('auth/popup-blocked')
+      ) {
+        setError(
+          'El navegador ha bloqueado la ventana de inicio de sesión. Permite las ventanas emergentes para este sitio e inténtalo de nuevo.'
+        );
+      } else {
+        setError(
+          code
+            ? `No se pudo iniciar sesión con tu cuenta de la UGR (${code}). Inténtalo de nuevo.`
             : 'No se pudo iniciar sesión con tu cuenta de la UGR. Inténtalo de nuevo.'
         );
       }
@@ -681,10 +717,14 @@ export default function App() {
           {authReady && !user ? (
             <div className="bg-white border border-slate-200/90 rounded-xl p-12 text-center">
               <h1 className="text-xl font-semibold text-[#0B1F3A]">
-                Accede con tu cuenta de la UGR
+                {invitedMeetingId
+                  ? 'Te han invitado a una reunión'
+                  : 'Accede con tu cuenta de la UGR'}
               </h1>
               <p className="mt-2 text-sm text-slate-500 max-w-md mx-auto">
-                Las reuniones y la disponibilidad de los participantes solo son visibles para cuentas institucionales (@ugr.es, @go.ugr.es o @correo.ugr.es).
+                {invitedMeetingId
+                  ? 'Inicia sesión con tu cuenta institucional de la UGR (@ugr.es, @go.ugr.es o @correo.ugr.es) para seleccionar tus preferencias para esta reunión.'
+                  : 'Las reuniones y la disponibilidad de los participantes solo son visibles para cuentas institucionales (@ugr.es, @go.ugr.es o @correo.ugr.es).'}
               </p>
               <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
                 <button
@@ -701,7 +741,11 @@ export default function App() {
                   className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-[#0B1F3A] rounded-lg hover:bg-[#132F54] cursor-pointer"
                 >
                   <LogIn className="w-4 h-4" />
-                  <span>Acceder con correo UGR</span>
+                  <span>
+                    {invitedMeetingId
+                      ? 'Acceder y seleccionar preferencias'
+                      : 'Acceder con correo UGR'}
+                  </span>
                 </button>
               </div>
             </div>
@@ -808,7 +852,7 @@ export default function App() {
                       <span>Ayuda</span>
                     </button>
 
-                    {isOrganizer && (
+                    {isOrganizer ? (
                       <button
                         type="button"
                         onClick={() => handleOpenEditMeeting(activeMeeting)}
@@ -816,6 +860,19 @@ export default function App() {
                       >
                         <Pencil className="w-3.5 h-3.5" />
                         <span>Editar reunión</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          document
+                            .getElementById('mi-disponibilidad')
+                            ?.scrollIntoView({ behavior: 'smooth' })
+                        }
+                        className="inline-flex items-center gap-2 h-9 px-4 text-xs font-semibold text-white bg-[#0B1F3A] rounded-lg hover:bg-[#132F54] transition-colors whitespace-nowrap cursor-pointer"
+                      >
+                        <SlidersHorizontal className="w-3.5 h-3.5" />
+                        <span>Seleccionar mis preferencias para esta reunión</span>
                       </button>
                     )}
 
