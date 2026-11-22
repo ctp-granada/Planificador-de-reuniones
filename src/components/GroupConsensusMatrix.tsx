@@ -65,8 +65,8 @@ export const GroupConsensusMatrix: React.FC<GroupConsensusMatrixProps> = ({
   }, [consensusList]);
 
   const topSlots = useMemo(
-    () => getTopRecommendedSlots(consensusList, 4),
-    [consensusList]
+    () => getTopRecommendedSlots(meeting, 4),
+    [meeting]
   );
 
   const passesFilter = (item: SlotConsensus | undefined): boolean => {

@@ -11,7 +11,11 @@ import {
   Plus,
   Users,
 } from 'lucide-react';
-import { formatDateLong, padTime, parseIsoDate } from '../utils/schedule.ts';
+import {
+  formatDateLong,
+  getMeetingEndTime,
+  parseIsoDate,
+} from '../utils/schedule.ts';
 import type { Meeting } from '../types/meeting.ts';
 
 type CalendarFilter = 'all' | 'confirmed' | 'open';
@@ -76,13 +80,7 @@ function getInitialYearMonth(
 function buildConfirmedTimeLabel(meeting: Meeting, slotId: string): string {
   const [, startTime] = slotId.split('__');
   if (!startTime) return '';
-  const [hh, mm] = startTime.split(':').map(Number);
-  const startMin = (hh || 0) * 60 + (mm || 0);
-  const endMin = Math.min(
-    meeting.endHour * 60,
-    startMin + (meeting.slotMinutes || 60)
-  );
-  return `${startTime} – ${padTime(endMin)}`;
+  return `${startTime} – ${getMeetingEndTime(meeting, startTime)}`;
 }
 
 export const MonthlyCalendarView: React.FC<MonthlyCalendarViewProps> = ({
