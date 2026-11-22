@@ -1,5 +1,14 @@
-import React, { useMemo, useState } from 'react';
-import { CalendarCheck2, Check, Clock, X } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  CalendarCheck2,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  Download,
+  X,
+} from 'lucide-react';
+import { exportConsensusMatrixCsv } from '../utils/exportCsv.ts';
 import {
   buildSlotId,
   formatDateShort,
@@ -24,6 +33,26 @@ export const GroupConsensusMatrix: React.FC<GroupConsensusMatrixProps> = ({
   onSelectSlot,
 }) => {
   const [filter, setFilter] = useState<MatrixFilter>('all');
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const updateScrollState = () => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    setCanScrollLeft(el.scrollLeft > 4);
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 4);
+  };
+
+  useEffect(() => {
+    updateScrollState();
+    window.addEventListener('resize', updateScrollState);
+    return () => window.removeEventListener('resize', updateScrollState);
+  }, [meeting.id, meeting.dates.length]);
+
+  const scrollDaysBy = (delta: number) => {
+    scrollContainerRef.current?.scrollBy({ left: delta, behavior: 'smooth' });
+  };
 
   const hourRows = useMemo(() => generateHourRows(meeting), [meeting]);
 
@@ -66,56 +95,67 @@ export const GroupConsensusMatrix: React.FC<GroupConsensusMatrixProps> = ({
             id="group-consensus-heading"
             className="text-base font-semibold text-[#0B1F3A] tracking-tight"
           >
-            Matriz de consenso grupal
+            Consenso grupal
           </h2>
-          <p className="text-sm text-slate-500 mt-0.5">
-            Haz clic en cualquier franja para deslizar el desglose por participante y fijar la reunión.
-          </p>
         </div>
 
-        <div
-          role="tablist"
-          aria-label="Filtrar franjas de consenso"
-          className="inline-flex items-center p-1 bg-slate-100 rounded-lg self-start lg:self-auto"
-        >
+        <div className="flex flex-wrap items-center gap-2.5 self-start lg:self-auto">
+          <div
+            role="tablist"
+            aria-label="Filtrar franjas de consenso"
+            className="inline-flex items-center p-1 bg-slate-100 rounded-lg"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={filter === 'all'}
+              onClick={() => setFilter('all')}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                filter === 'all'
+                  ? 'bg-white text-[#0B1F3A] shadow-xs'
+                  : 'text-slate-600 hover:text-[#0B1F3A]'
+              }`}
+            >
+              Todas las franjas
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={filter === 'no-conflicts'}
+              onClick={() => setFilter('no-conflicts')}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                filter === 'no-conflicts'
+                  ? 'bg-white text-[#0B1F3A] shadow-xs'
+                  : 'text-slate-600 hover:text-[#0B1F3A]'
+              }`}
+            >
+              Sin conflictos
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={filter === 'high-consensus'}
+              onClick={() => setFilter('high-consensus')}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                filter === 'high-consensus'
+                  ? 'bg-white text-[#0B1F3A] shadow-xs'
+                  : 'text-slate-600 hover:text-[#0B1F3A]'
+              }`}
+            >
+              Consenso ≥ 75%
+            </button>
+          </div>
+
           <button
             type="button"
-            role="tab"
-            aria-selected={filter === 'all'}
-            onClick={() => setFilter('all')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-              filter === 'all'
-                ? 'bg-white text-[#0B1F3A] shadow-xs'
-                : 'text-slate-600 hover:text-[#0B1F3A]'
-            }`}
+            onClick={() =>
+              exportConsensusMatrixCsv(meeting, consensusMap, passesFilter)
+            }
+            disabled={meeting.dates.length === 0 || hourRows.length === 0}
+            className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-medium text-[#0B1F3A] bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 disabled:opacity-40 cursor-pointer"
           >
-            Todas las franjas
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={filter === 'no-conflicts'}
-            onClick={() => setFilter('no-conflicts')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-              filter === 'no-conflicts'
-                ? 'bg-white text-[#0B1F3A] shadow-xs'
-                : 'text-slate-600 hover:text-[#0B1F3A]'
-            }`}
-          >
-            Sin conflictos
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={filter === 'high-consensus'}
-            onClick={() => setFilter('high-consensus')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-              filter === 'high-consensus'
-                ? 'bg-white text-[#0B1F3A] shadow-xs'
-                : 'text-slate-600 hover:text-[#0B1F3A]'
-            }`}
-          >
-            Consenso ≥ 75%
+            <Download className="w-3.5 h-3.5" />
+            <span>Descargar CSV</span>
           </button>
         </div>
       </div>
@@ -123,14 +163,9 @@ export const GroupConsensusMatrix: React.FC<GroupConsensusMatrixProps> = ({
       {/* Recommended Top Windows Strip */}
       {topSlots.length > 0 && (
         <div className="py-5 border-b border-slate-100">
-          <div className="flex items-center justify-between gap-4 mb-3">
-            <h3 className="text-xs font-semibold text-slate-500 tracking-wide">
-              Franjas recomendadas por mayor coincidencia
-            </h3>
-            <span className="text-xs text-slate-400">
-              Ponderación: Disponible (+2) · Adaptable (+1) · No disponible (-1.5)
-            </span>
-          </div>
+          <h3 className="text-xs font-semibold text-slate-500 tracking-wide mb-3">
+            Mejores opciones
+          </h3>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
             {topSlots.map((item, rank) => {
@@ -189,12 +224,40 @@ export const GroupConsensusMatrix: React.FC<GroupConsensusMatrixProps> = ({
         </div>
       )}
 
+      {/* Horizontal day scroll buttons when days overflow */}
+      {(canScrollLeft || canScrollRight) && (
+        <div className="mt-4 flex items-center justify-end gap-1.5">
+          <button
+            type="button"
+            onClick={() => scrollDaysBy(-280)}
+            disabled={!canScrollLeft}
+            aria-label="Desplazar días a la izquierda"
+            className="p-1.5 rounded-lg border border-slate-200 bg-white text-[#0B1F3A] hover:bg-slate-50 disabled:opacity-40 cursor-pointer"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => scrollDaysBy(280)}
+            disabled={!canScrollRight}
+            aria-label="Desplazar días a la derecha"
+            className="p-1.5 rounded-lg border border-slate-200 bg-white text-[#0B1F3A] hover:bg-slate-50 disabled:opacity-40 cursor-pointer"
+          >
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Consensus Matrix Table */}
-      <div className="mt-5 overflow-x-auto">
-        <table className="w-full border-collapse min-w-[540px]">
+      <div
+        ref={scrollContainerRef}
+        onScroll={updateScrollState}
+        className="mt-4 overflow-x-auto"
+      >
+        <table className="w-full border-separate border-spacing-0">
           <thead>
             <tr>
-              <th className="w-24 pb-3 pr-3 text-left text-xs font-medium text-slate-400">
+              <th className="sticky left-0 z-10 bg-white border-r border-slate-200/80 w-28 min-w-[112px] pb-3 pr-3 text-left text-xs font-medium text-slate-400">
                 Franja
               </th>
               {meeting.dates.map((date) => {
@@ -202,7 +265,7 @@ export const GroupConsensusMatrix: React.FC<GroupConsensusMatrixProps> = ({
                 return (
                   <th
                     key={date}
-                    className="pb-3 px-1.5 text-center text-xs font-semibold text-[#0B1F3A]"
+                    className="min-w-[136px] pb-3 px-1.5 text-center text-xs font-semibold text-[#0B1F3A] whitespace-nowrap"
                   >
                     {weekday} {dayMonth}
                   </th>
@@ -213,7 +276,7 @@ export const GroupConsensusMatrix: React.FC<GroupConsensusMatrixProps> = ({
           <tbody>
             {hourRows.map((row) => (
               <tr key={row.startTime}>
-                <td className="py-1 pr-3 text-left font-mono text-xs tabular-nums text-slate-500 whitespace-nowrap">
+                <td className="sticky left-0 z-10 bg-white border-r border-slate-200/80 py-1 pr-3 text-left font-mono text-xs tabular-nums text-slate-500 whitespace-nowrap">
                   {row.startTime} – {row.endTime}
                 </td>
                 {meeting.dates.map((date) => {

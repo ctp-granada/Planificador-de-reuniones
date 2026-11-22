@@ -2,6 +2,8 @@ export type AvailabilityStatus = 'available' | 'adaptable' | 'unavailable';
 
 export interface ParticipantResponse {
   id: string;
+  meetingId?: string;
+  ownerUid?: string;
   name: string;
   role: string;
   note: string;
@@ -14,6 +16,7 @@ export interface Meeting {
   title: string;
   description: string;
   organizer: string;
+  organizerUid?: string;
   location: string;
   durationMinutes: number;
   dates: string[];

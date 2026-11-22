@@ -1,0 +1,237 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: deny everything by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Reusable primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isUgrUser() {
+      return isVerifiedUser()
+        && request.auth.token.email is string
+        && request.auth.token.email.lower().matches('^[^@\\s]+@(go\\.|correo\\.)?ugr\\.es$');
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidString(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isValidMeeting(data) {
+      return data.keys().hasAll([
+          'id',
+          'title',
+          'description',
+          'organizerName',
+          'organizerUid',
+          'location',
+          'durationMinutes',
+          'dates',
+          'startHour',
+          'endHour',
+          'slotMinutes',
+          'visibility',
+          'confirmedSlotId',
+          'confirmedNote',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id',
+          'title',
+          'description',
+          'organizerName',
+          'organizerUid',
+          'location',
+          'durationMinutes',
+          'dates',
+          'startHour',
+          'endHour',
+          'slotMinutes',
+          'visibility',
+          'confirmedSlotId',
+          'confirmedNote',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidString(data.title, 1, 140)
+        && isValidString(data.description, 0, 500)
+        && isValidString(data.organizerName, 1, 80)
+        && isValidId(data.organizerUid)
+        && isValidString(data.location, 0, 140)
+        && data.durationMinutes is int
+        && data.durationMinutes >= 15
+        && data.durationMinutes <= 480
+        && data.dates is list
+        && data.dates.size() >= 1
+        && data.dates.size() <= 14
+        && data.dates[0] is string
+        && data.dates[0].size() == 10
+        && data.startHour is int
+        && data.startHour >= 6
+        && data.startHour <= 20
+        && data.endHour is int
+        && data.endHour > data.startHour
+        && data.endHour <= 22
+        && data.slotMinutes is int
+        && (data.slotMinutes == 30 || data.slotMinutes == 60)
+        && data.visibility == 'shared'
+        && (data.confirmedSlotId == null || isValidString(data.confirmedSlotId, 1, 40))
+        && isValidString(data.confirmedNote, 0, 280)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidParticipant(data, meetingId) {
+      return data.keys().hasAll([
+          'id',
+          'meetingId',
+          'ownerUid',
+          'isShared',
+          'name',
+          'role',
+          'note',
+          'slots',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id',
+          'meetingId',
+          'ownerUid',
+          'isShared',
+          'name',
+          'role',
+          'note',
+          'slots',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.meetingId == meetingId
+        && isValidId(data.ownerUid)
+        && data.isShared == true
+        && isValidString(data.name, 1, 80)
+        && isValidString(data.role, 0, 80)
+        && isValidString(data.note, 0, 280)
+        && data.slots is map
+        && data.slots.size() <= 350
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /meetings/{meetingId} {
+      // Everyone can view shared meetings (no PII stored)
+      allow get: if isValidId(meetingId) && existing().visibility == 'shared';
+      allow list: if resource.data.visibility == 'shared';
+
+      allow create: if isUgrUser()
+        && isValidId(meetingId)
+        && isValidMeeting(incoming())
+        && incoming().id == meetingId
+        && incoming().organizerUid == request.auth.uid
+        && incoming().confirmedSlotId == null
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isUgrUser()
+        && isValidId(meetingId)
+        && isValidMeeting(incoming())
+        && existing().organizerUid == request.auth.uid
+        && incoming().id == existing().id
+        && incoming().organizerUid == existing().organizerUid
+        && incoming().visibility == existing().visibility
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Confirm or clear final slot
+          incoming().diff(existing()).affectedKeys().hasOnly(['confirmedSlotId', 'confirmedNote', 'updatedAt'])
+          // Action: Update meeting configuration and details
+          || incoming().diff(existing()).affectedKeys().hasOnly([
+            'title',
+            'description',
+            'organizerName',
+            'location',
+            'durationMinutes',
+            'dates',
+            'startHour',
+            'endHour',
+            'slotMinutes',
+            'confirmedSlotId',
+            'confirmedNote',
+            'updatedAt'
+          ])
+        );
+
+      allow delete: if isUgrUser()
+        && isValidId(meetingId)
+        && existing().organizerUid == request.auth.uid;
+
+      match /participants/{participantId} {
+        // Everyone can view shared participant availability choices
+        allow get: if isValidId(meetingId)
+          && isValidId(participantId)
+          && existing().isShared == true;
+        allow list: if resource.data.isShared == true;
+
+        allow create: if isUgrUser()
+          && isValidId(meetingId)
+          && isValidId(participantId)
+          && participantId == request.auth.uid
+          && isValidParticipant(incoming(), meetingId)
+          && incoming().id == participantId
+          && incoming().ownerUid == request.auth.uid
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/meetings/$(meetingId))
+          && get(/databases/$(database)/documents/meetings/$(meetingId)).data.visibility == 'shared';
+
+        allow update: if isUgrUser()
+          && isValidId(meetingId)
+          && isValidId(participantId)
+          && isValidParticipant(incoming(), meetingId)
+          && incoming().id == existing().id
+          && incoming().meetingId == existing().meetingId
+          && incoming().ownerUid == existing().ownerUid
+          && incoming().isShared == existing().isShared
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && existing().ownerUid == request.auth.uid
+          && (
+            // Action: Update own availability slots, note, name, or role
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'role', 'note', 'slots', 'updatedAt'])
+          );
+
+        allow delete: if isUgrUser()
+          && isValidId(meetingId)
+          && isValidId(participantId)
+          && (
+            existing().ownerUid == request.auth.uid
+            || get(/databases/$(database)/documents/meetings/$(meetingId)).data.organizerUid == request.auth.uid
+          );
+      }
+    }
+  }
+}

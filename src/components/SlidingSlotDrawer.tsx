@@ -7,17 +7,21 @@ import type { Meeting, ParticipantResponse, SlotConsensus } from '../types/meeti
 interface SlidingSlotDrawerProps {
   meeting: Meeting;
   consensus: SlotConsensus | null;
+  currentUserUid: string | null;
+  canConfirm: boolean;
   onClose: () => void;
   onConfirmSlot: (slotId: string | null, note: string) => Promise<void>;
-  onSelectParticipantForEdit: (participantId: string) => void;
+  onScrollToMyAvailability: () => void;
 }
 
 export const SlidingSlotDrawer: React.FC<SlidingSlotDrawerProps> = ({
   meeting,
   consensus,
+  currentUserUid,
+  canConfirm,
   onClose,
   onConfirmSlot,
-  onSelectParticipantForEdit,
+  onScrollToMyAvailability,
 }) => {
   const [confirmNote, setConfirmNote] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -105,16 +109,18 @@ export const SlidingSlotDrawer: React.FC<SlidingSlotDrawerProps> = ({
                 </div>
               </div>
 
-              <button
-                type="button"
-                onClick={() => {
-                  onSelectParticipantForEdit(person.id);
-                  onClose();
-                }}
-                className="text-xs font-medium text-slate-400 hover:text-[#0B1F3A] whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                Editar
-              </button>
+              {currentUserUid && person.ownerUid === currentUserUid && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onScrollToMyAvailability();
+                    onClose();
+                  }}
+                  className="text-xs font-medium text-slate-500 hover:text-[#0B1F3A] whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  Editar
+                </button>
+              )}
             </li>
           ))}
         </ul>
@@ -212,44 +218,52 @@ export const SlidingSlotDrawer: React.FC<SlidingSlotDrawerProps> = ({
 
             {/* Organizer Confirmation Footer */}
             <div className="px-6 py-5 border-t border-slate-200 bg-slate-50/70 space-y-3">
-              {!isConfirmed && (
-                <div>
-                  <label
-                    htmlFor="confirm-slot-note"
-                    className="block text-xs font-medium text-slate-600 mb-1.5"
-                  >
-                    Nota de convocatoria (opcional)
-                  </label>
-                  <input
-                    id="confirm-slot-note"
-                    type="text"
-                    value={confirmNote}
-                    onChange={(e) => setConfirmNote(e.target.value)}
-                    placeholder="Ej. Confirmada en Sala 3B · Se enviará enlace"
-                    className="w-full h-9 px-3 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-[#0B1F3A]"
-                  />
-                </div>
-              )}
+              {canConfirm ? (
+                <>
+                  {!isConfirmed && (
+                    <div>
+                      <label
+                        htmlFor="confirm-slot-note"
+                        className="block text-xs font-medium text-slate-600 mb-1.5"
+                      >
+                        Nota de convocatoria (opcional)
+                      </label>
+                      <input
+                        id="confirm-slot-note"
+                        type="text"
+                        value={confirmNote}
+                        onChange={(e) => setConfirmNote(e.target.value)}
+                        placeholder="Ej. Confirmada en Sala 3B · Se enviará enlace"
+                        className="w-full h-9 px-3 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-[#0B1F3A]"
+                      />
+                    </div>
+                  )}
 
-              <button
-                type="button"
-                onClick={handleToggleConfirm}
-                disabled={isSubmitting}
-                className={`w-full h-10 px-4 inline-flex items-center justify-center gap-2 text-sm font-medium rounded-lg transition-colors cursor-pointer ${
-                  isConfirmed
-                    ? 'bg-white border border-slate-300 text-[#0B1F3A] hover:bg-slate-100'
-                    : 'bg-[#0B1F3A] text-white hover:bg-[#132F54]'
-                }`}
-              >
-                <CalendarCheck2 className="w-4 h-4" />
-                <span>
-                  {isSubmitting
-                    ? 'Actualizando...'
-                    : isConfirmed
-                      ? 'Anular confirmación de esta franja'
-                      : 'Confirmar franja definitiva'}
-                </span>
-              </button>
+                  <button
+                    type="button"
+                    onClick={handleToggleConfirm}
+                    disabled={isSubmitting}
+                    className={`w-full h-10 px-4 inline-flex items-center justify-center gap-2 text-sm font-medium rounded-lg transition-colors cursor-pointer ${
+                      isConfirmed
+                        ? 'bg-white border border-slate-300 text-[#0B1F3A] hover:bg-slate-100'
+                        : 'bg-[#0B1F3A] text-white hover:bg-[#132F54]'
+                    }`}
+                  >
+                    <CalendarCheck2 className="w-4 h-4" />
+                    <span>
+                      {isSubmitting
+                        ? 'Actualizando...'
+                        : isConfirmed
+                          ? 'Anular confirmación de esta franja'
+                          : 'Confirmar franja definitiva'}
+                    </span>
+                  </button>
+                </>
+              ) : (
+                <p className="text-xs text-slate-500">
+                  Solo quien organiza la reunión ({meeting.organizer}) puede confirmar o cambiar la franja definitiva.
+                </p>
+              )}
             </div>
           </motion.aside>
         </>

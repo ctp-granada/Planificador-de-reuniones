@@ -1,0 +1,195 @@
+{
+  "entities": {
+    "Meeting": {
+      "title": "Meeting",
+      "description": "Group meeting scheduling poll with candidate dates, time range, and confirmation status.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique meeting identifier."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 140,
+          "description": "Title of the group meeting."
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Brief objective or agenda."
+        },
+        "organizerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Display name of the organizer."
+        },
+        "organizerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the meeting creator."
+        },
+        "location": {
+          "type": "string",
+          "maxLength": 140,
+          "description": "Room or meeting link."
+        },
+        "durationMinutes": {
+          "type": "integer",
+          "description": "Planned meeting duration in minutes (15-480)."
+        },
+        "dates": {
+          "type": "array",
+          "description": "Bounded list of 1 to 14 candidate ISO dates (YYYY-MM-DD)."
+        },
+        "startHour": {
+          "type": "integer",
+          "description": "Start hour of candidate window (6-20)."
+        },
+        "endHour": {
+          "type": "integer",
+          "description": "End hour of candidate window (7-22)."
+        },
+        "slotMinutes": {
+          "type": "integer",
+          "enum": [30, 60],
+          "description": "Granularity of each time slot in minutes."
+        },
+        "visibility": {
+          "type": "string",
+          "enum": ["shared"],
+          "description": "Shared visibility flag allowing anyone with access to view consensus."
+        },
+        "confirmedSlotId": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "Confirmed slot identifier or null."
+        },
+        "confirmedNote": {
+          "type": "string",
+          "maxLength": 280,
+          "description": "Optional note when confirming a slot."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last update timestamp."
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "description",
+        "organizerName",
+        "organizerUid",
+        "location",
+        "durationMinutes",
+        "dates",
+        "startHour",
+        "endHour",
+        "slotMinutes",
+        "visibility",
+        "confirmedSlotId",
+        "confirmedNote",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ParticipantResponse": {
+      "title": "ParticipantResponse",
+      "description": "Availability selections and flexibility notes for one participant in a meeting.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Participant document identifier."
+        },
+        "meetingId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Parent meeting identifier."
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the user who owns this response."
+        },
+        "isShared": {
+          "type": "boolean",
+          "description": "Mirrors parent meeting shared visibility for secure list queries."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Participant display name."
+        },
+        "role": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "Optional department or role."
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 280,
+          "description": "Optional flexibility note."
+        },
+        "slots": {
+          "type": "object",
+          "description": "Map from slotId (YYYY-MM-DD__HH:MM) to available | adaptable | unavailable."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last update timestamp."
+        }
+      },
+      "required": [
+        "id",
+        "meetingId",
+        "ownerUid",
+        "isShared",
+        "name",
+        "role",
+        "note",
+        "slots",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/meetings/{meetingId}": {
+      "schema": { "$ref": "#/entities/Meeting" },
+      "description": "Group meeting polls shared across participants."
+    },
+    "/meetings/{meetingId}/participants/{participantId}": {
+      "schema": { "$ref": "#/entities/ParticipantResponse" },
+      "description": "Subcollection storing each participant's slot availability (available, adaptable, unavailable)."
+    }
+  }
+}

@@ -1,90 +1,156 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
 import {
   CalendarCheck2,
+  CalendarDays,
   Check,
+  HelpCircle,
+  LayoutGrid,
   Link2,
+  LogIn,
+  LogOut,
   Menu,
+  Pencil,
   Plus,
   RefreshCw,
   Trash2,
   X,
 } from 'lucide-react';
 import { AvailabilityEditorGrid } from './components/AvailabilityEditorGrid.tsx';
-import { ConsensusCurveChart } from './components/ConsensusCurveChart.tsx';
 import { GroupConsensusMatrix } from './components/GroupConsensusMatrix.tsx';
-import { NewMeetingDrawer } from './components/NewMeetingDrawer.tsx';
-import { NewParticipantDrawer } from './components/NewParticipantDrawer.tsx';
+import { HelpDrawer } from './components/HelpDrawer.tsx';
+import { MonthlyCalendarView } from './components/MonthlyCalendarView.tsx';
+import {
+  NewMeetingDrawer,
+  type MeetingFormPayload,
+} from './components/NewMeetingDrawer.tsx';
 import { ParticipantsPanel } from './components/ParticipantsPanel.tsx';
 import { SlidingSlotDrawer } from './components/SlidingSlotDrawer.tsx';
+import { auth, googleProvider, isUgrEmail } from './firebase.ts';
+import {
+  confirmMeetingSlotInFirestore,
+  createMeetingInFirestore,
+  deleteMeetingInFirestore,
+  removeParticipantInFirestore,
+  saveParticipantAvailabilityInFirestore,
+  subscribeMeetingParticipants,
+  subscribeSharedMeetings,
+  updateMeetingInFirestore,
+} from './services/firestoreMeetings.ts';
 import {
   computeAllConsensus,
   formatDateLong,
   getTopRecommendedSlots,
 } from './utils/schedule.ts';
-import type { AvailabilityStatus, Meeting } from './types/meeting.ts';
+import type {
+  AvailabilityStatus,
+  Meeting,
+  ParticipantResponse,
+} from './types/meeting.ts';
 
 export default function App() {
-  const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [user, setUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+
+  const [rawMeetings, setRawMeetings] = useState<
+    Omit<Meeting, 'participants'>[]
+  >([]);
+  const [participantsByMeeting, setParticipantsByMeeting] = useState<
+    Record<string, ParticipantResponse[]>
+  >({});
+
   const [activeMeetingId, setActiveMeetingId] = useState<string | null>(null);
-  const [activeParticipantId, setActiveParticipantId] = useState<string | null>(
-    null
-  );
   const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'detail' | 'calendar'>('detail');
   const [isNewMeetingOpen, setIsNewMeetingOpen] = useState(false);
-  const [isNewParticipantOpen, setIsNewParticipantOpen] = useState(false);
+  const [editingMeeting, setEditingMeeting] = useState<Meeting | null>(null);
+  const [defaultNewMeetingDate, setDefaultNewMeetingDate] = useState<
+    string | null
+  >(null);
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
 
-  const loadMeetings = useCallback(async (preferredMeetingId?: string) => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/meetings');
-      if (!res.ok) {
-        throw new Error('No se pudieron cargar las reuniones.');
-      }
-      const data = (await res.json()) as { meetings: Meeting[] };
-      const list = data.meetings ?? [];
-      setMeetings(list);
-
-      const urlParams = new URLSearchParams(window.location.search);
-      const urlMeetingId = urlParams.get('reunion');
-      const targetId = preferredMeetingId ?? urlMeetingId;
-      const matched =
-        (targetId && list.find((m) => m.id === targetId)) || list[0] || null;
-
-      setActiveMeetingId(matched ? matched.id : null);
-      if (matched && matched.participants.length > 0) {
-        setActiveParticipantId((prev) =>
-          prev && matched.participants.some((p) => p.id === prev)
-            ? prev
-            : matched.participants[0].id
+  // 1. Track Firebase Auth state and enforce institutional UGR email
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (firebaseUser) => {
+      if (firebaseUser && !isUgrEmail(firebaseUser.email)) {
+        void signOut(auth);
+        setUser(null);
+        setError(
+          'Solo se permite el acceso con una cuenta de correo de la UGR (@ugr.es o @go.ugr.es).'
         );
       } else {
-        setActiveParticipantId(null);
+        setUser(firebaseUser);
       }
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : 'Error al conectar con el servidor.'
-      );
-    } finally {
-      setIsLoading(false);
-    }
+      setAuthReady(true);
+    });
+    return () => unsub();
   }, []);
 
+  // 2. Real-time Firestore subscription to all shared meetings
   useEffect(() => {
-    loadMeetings();
-  }, [loadMeetings]);
+    setIsLoading(true);
+    const unsub = subscribeSharedMeetings(
+      (list) => {
+        setRawMeetings(list);
+        setIsLoading(false);
+        setError(null);
+
+        setActiveMeetingId((prev) => {
+          if (prev && list.some((m) => m.id === prev)) return prev;
+          const urlParams = new URLSearchParams(window.location.search);
+          const urlMeetingId = urlParams.get('reunion');
+          if (urlMeetingId && list.some((m) => m.id === urlMeetingId)) {
+            return urlMeetingId;
+          }
+          return list[0]?.id ?? null;
+        });
+      },
+      (err) => {
+        setError(err.message);
+        setIsLoading(false);
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
+  // 3. Real-time Firestore subscription to participants of the active meeting
+  useEffect(() => {
+    if (!activeMeetingId) return;
+    const unsub = subscribeMeetingParticipants(
+      activeMeetingId,
+      (participants) => {
+        setParticipantsByMeeting((prev) => ({
+          ...prev,
+          [activeMeetingId]: participants,
+        }));
+      },
+      (err) => {
+        setError(err.message);
+      }
+    );
+    return () => unsub();
+  }, [activeMeetingId]);
+
+  const meetings: Meeting[] = useMemo(
+    () =>
+      rawMeetings.map((m) => ({
+        ...m,
+        participants: participantsByMeeting[m.id] ?? [],
+      })),
+    [rawMeetings, participantsByMeeting]
+  );
 
   const activeMeeting = useMemo(
     () => meetings.find((m) => m.id === activeMeetingId) ?? null,
     [meetings, activeMeetingId]
   );
 
+  // Sync URL query param
   useEffect(() => {
     if (!activeMeeting) return;
     const url = new URL(window.location.href);
@@ -92,14 +158,16 @@ export default function App() {
     window.history.replaceState({}, '', url.toString());
   }, [activeMeeting?.id]);
 
-  const activeParticipant = useMemo(() => {
-    if (!activeMeeting) return null;
+  const myParticipant = useMemo(() => {
+    if (!activeMeeting || !user) return null;
     return (
-      activeMeeting.participants.find((p) => p.id === activeParticipantId) ??
-      activeMeeting.participants[0] ??
-      null
+      activeMeeting.participants.find((p) => p.ownerUid === user.uid) ?? null
     );
-  }, [activeMeeting, activeParticipantId]);
+  }, [activeMeeting, user]);
+
+  const isOrganizer = Boolean(
+    user && activeMeeting && activeMeeting.organizerUid === user.uid
+  );
 
   const consensusList = useMemo(
     () => (activeMeeting ? computeAllConsensus(activeMeeting) : []),
@@ -108,16 +176,6 @@ export default function App() {
 
   const topSlots = useMemo(
     () => getTopRecommendedSlots(consensusList, 1),
-    [consensusList]
-  );
-
-  const conflictFreeCount = useMemo(
-    () =>
-      consensusList.filter(
-        (c) =>
-          c.unavailable.length === 0 &&
-          c.available.length + c.adaptable.length > 0
-      ).length,
     [consensusList]
   );
 
@@ -134,139 +192,120 @@ export default function App() {
     );
   }, [consensusList, activeMeeting?.confirmedSlotId]);
 
-  const updateMeetingInState = (updated: Meeting) => {
-    setMeetings((prev) =>
-      prev.map((m) => (m.id === updated.id ? updated : m))
-    );
+  const handleSignIn = useCallback(async (): Promise<User | null> => {
+    setError(null);
+    try {
+      const cred = await signInWithPopup(auth, googleProvider);
+      if (!isUgrEmail(cred.user.email)) {
+        await signOut(auth);
+        setError(
+          'Solo se permite el acceso con una cuenta de correo de la UGR (@ugr.es o @go.ugr.es).'
+        );
+        return null;
+      }
+      return cred.user;
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'No se pudo iniciar sesión con tu cuenta de la UGR.'
+      );
+      return null;
+    }
+  }, []);
+
+  const handleSignOut = async () => {
+    await signOut(auth);
+  };
+
+  const handleOpenNewMeeting = async (preselectedDate?: string | null) => {
+    if (!user) {
+      const signedIn = await handleSignIn();
+      if (!signedIn) return;
+    }
+    setEditingMeeting(null);
+    setDefaultNewMeetingDate(preselectedDate ?? null);
+    setIsNewMeetingOpen(true);
+  };
+
+  const handleOpenEditMeeting = async (meeting: Meeting) => {
+    if (!user) {
+      const signedIn = await handleSignIn();
+      if (!signedIn) return;
+    }
+    setDefaultNewMeetingDate(null);
+    setEditingMeeting(meeting);
+    setIsNewMeetingOpen(true);
+    setIsMobileSidebarOpen(false);
+  };
+
+  const handleNavigateDetailSection = (sectionId: string) => {
+    setViewMode('detail');
+    window.setTimeout(() => {
+      document
+        .getElementById(sectionId)
+        ?.scrollIntoView({ behavior: 'smooth' });
+    }, 40);
   };
 
   const handleSelectMeeting = (meeting: Meeting) => {
     setActiveMeetingId(meeting.id);
     setSelectedSlotId(null);
-    setActiveParticipantId(meeting.participants[0]?.id ?? null);
+    setViewMode('detail');
     setIsMobileSidebarOpen(false);
   };
 
-  const handleCreateMeeting = async (payload: {
-    title: string;
-    description: string;
-    organizer: string;
-    location: string;
-    durationMinutes: number;
-    dates: string[];
-    startHour: number;
-    endHour: number;
-    slotMinutes: number;
-  }) => {
-    const res = await fetch('/api/meetings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+  const handleCreateMeeting = async (payload: MeetingFormPayload) => {
+    const newId = await createMeetingInFirestore(payload);
+    setActiveMeetingId(newId);
+    setSelectedSlotId(null);
+  };
+
+  const handleUpdateMeeting = async (
+    meetingId: string,
+    payload: MeetingFormPayload
+  ) => {
+    const target = meetings.find((m) => m.id === meetingId);
+    await updateMeetingInFirestore(meetingId, {
+      ...payload,
+      currentConfirmedSlotId: target?.confirmedSlotId ?? null,
     });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || 'Error al crear la reunión.');
-    }
-    const { meeting } = (await res.json()) as { meeting: Meeting };
-    setMeetings((prev) => [meeting, ...prev]);
-    setActiveMeetingId(meeting.id);
-    setActiveParticipantId(meeting.participants[0]?.id ?? null);
     setSelectedSlotId(null);
   };
 
   const handleSaveAvailability = async (payload: {
-    participantId: string;
+    participantId?: string;
     name: string;
     role: string;
     note: string;
     slots: Record<string, AvailabilityStatus>;
   }) => {
     if (!activeMeeting) return;
-    const res = await fetch(
-      `/api/meetings/${activeMeeting.id}/participants`,
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      }
-    );
-    if (!res.ok) {
-      throw new Error('No se pudo guardar la disponibilidad.');
-    }
-    const { meeting } = (await res.json()) as { meeting: Meeting };
-    updateMeetingInState(meeting);
-  };
-
-  const handleAddParticipant = async (payload: {
-    name: string;
-    role: string;
-  }) => {
-    if (!activeMeeting) return;
-    const res = await fetch(
-      `/api/meetings/${activeMeeting.id}/participants`,
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: payload.name,
-          role: payload.role,
-          note: '',
-          slots: {},
-        }),
-      }
-    );
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || 'No se pudo añadir al participante.');
-    }
-    const { meeting, participant } = (await res.json()) as {
-      meeting: Meeting;
-      participant: { id: string };
-    };
-    updateMeetingInState(meeting);
-    setActiveParticipantId(participant.id);
-    document
-      .getElementById('mi-disponibilidad')
-      ?.scrollIntoView({ behavior: 'smooth' });
+    await saveParticipantAvailabilityInFirestore(activeMeeting.id, payload);
   };
 
   const handleRemoveParticipant = async (participantId: string) => {
     if (!activeMeeting) return;
-    const res = await fetch(
-      `/api/meetings/${activeMeeting.id}/participants/${participantId}`,
-      { method: 'DELETE' }
-    );
-    if (!res.ok) return;
-    const { meeting } = (await res.json()) as { meeting: Meeting };
-    updateMeetingInState(meeting);
-    if (activeParticipantId === participantId) {
-      setActiveParticipantId(meeting.participants[0]?.id ?? null);
+    setError(null);
+    try {
+      await removeParticipantInFirestore(activeMeeting.id, participantId);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'No se pudo eliminar al participante.'
+      );
     }
   };
 
   const handleConfirmSlot = async (slotId: string | null, note: string) => {
     if (!activeMeeting) return;
-    const res = await fetch(`/api/meetings/${activeMeeting.id}/confirm`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slotId, confirmedNote: note }),
-    });
-    if (!res.ok) return;
-    const { meeting } = (await res.json()) as { meeting: Meeting };
-    updateMeetingInState(meeting);
+    await confirmMeetingSlotInFirestore(activeMeeting.id, slotId, note);
   };
 
   const handleDeleteMeeting = async (meetingId: string) => {
-    const res = await fetch(`/api/meetings/${meetingId}`, {
-      method: 'DELETE',
-    });
-    if (!res.ok) return;
-    const remaining = meetings.filter((m) => m.id !== meetingId);
-    setMeetings(remaining);
+    await deleteMeetingInFirestore(meetingId);
     if (activeMeetingId === meetingId) {
-      const next = remaining[0] ?? null;
-      setActiveMeetingId(next?.id ?? null);
-      setActiveParticipantId(next?.participants[0]?.id ?? null);
       setSelectedSlotId(null);
     }
   };
@@ -314,36 +353,49 @@ export default function App() {
           aria-label="Navegación principal"
           className="hidden md:flex items-center gap-7 text-sm font-medium text-slate-600"
         >
-          <a
-            href="#resumen"
-            className="hover:text-[#0B1F3A] transition-colors whitespace-nowrap shrink-0"
+          <button
+            type="button"
+            onClick={() => setViewMode('calendar')}
+            className={`hover:text-[#0B1F3A] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              viewMode === 'calendar' ? 'text-[#0B1F3A] font-semibold' : ''
+            }`}
           >
-            Resumen
-          </a>
-          <a
-            href="#mi-disponibilidad"
-            className="hover:text-[#0B1F3A] transition-colors whitespace-nowrap shrink-0"
+            Calendario
+          </button>
+          <button
+            type="button"
+            onClick={() => handleNavigateDetailSection('mi-disponibilidad')}
+            className="hover:text-[#0B1F3A] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             Mi disponibilidad
-          </a>
-          <a
-            href="#consenso-grupal"
-            className="hover:text-[#0B1F3A] transition-colors whitespace-nowrap shrink-0"
+          </button>
+          <button
+            type="button"
+            onClick={() => handleNavigateDetailSection('consenso-grupal')}
+            className="hover:text-[#0B1F3A] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             Consenso
-          </a>
-          <a
-            href="#participantes"
-            className="hover:text-[#0B1F3A] transition-colors whitespace-nowrap shrink-0"
+          </button>
+          <button
+            type="button"
+            onClick={() => handleNavigateDetailSection('participantes')}
+            className="hover:text-[#0B1F3A] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             Participantes
-          </a>
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsHelpOpen(true)}
+            className="hover:text-[#0B1F3A] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            Ayuda
+          </button>
         </nav>
 
         <div className="flex items-center shrink-0">
           <button
             type="button"
-            onClick={() => setIsNewMeetingOpen(true)}
+            onClick={() => handleOpenNewMeeting()}
             className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#0B1F3A] rounded-lg hover:bg-[#132F54] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5" />
@@ -354,7 +406,7 @@ export default function App() {
 
       {/* Main Workspace: Sidebar + Content Viewport */}
       <div className="flex-1 flex max-w-[1440px] w-full mx-auto">
-        {/* Sidebar (Desktop fixed column + Mobile slide-over) */}
+        {/* Sidebar */}
         <aside
           aria-label="Reuniones activas"
           className={`${
@@ -387,6 +439,7 @@ export default function App() {
             ) : (
               meetings.map((m) => {
                 const isSelected = m.id === activeMeeting?.id;
+                const canManage = Boolean(user && m.organizerUid === user.uid);
                 return (
                   <div
                     key={m.id}
@@ -399,7 +452,9 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => handleSelectMeeting(m)}
-                      className="w-full text-left px-3.5 py-3 pr-9 cursor-pointer"
+                      className={`w-full text-left px-3.5 py-3 cursor-pointer ${
+                        canManage ? 'pr-14' : 'pr-3.5'
+                      }`}
                     >
                       <div className="text-sm font-semibold leading-snug line-clamp-2">
                         {m.title}
@@ -409,30 +464,92 @@ export default function App() {
                           isSelected ? 'text-slate-300' : 'text-slate-500'
                         }`}
                       >
-                        <span>{m.participants.length} participantes</span>
-                        <span aria-hidden="true">·</span>
                         <span>{m.dates.length} días</span>
+                        {m.confirmedSlotId && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span>Confirmada</span>
+                          </>
+                        )}
                       </div>
                     </button>
 
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteMeeting(m.id);
-                      }}
-                      aria-label={`Eliminar ${m.title}`}
-                      className={`absolute top-3 right-2.5 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer ${
-                        isSelected
-                          ? 'text-slate-300 hover:text-white'
-                          : 'text-slate-400 hover:text-rose-700'
-                      }`}
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    {canManage && (
+                      <div className="absolute top-2.5 right-2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveMeetingId(m.id);
+                            handleOpenEditMeeting(m);
+                          }}
+                          aria-label={`Editar ${m.title}`}
+                          title="Editar reunión"
+                          className={`p-1 rounded cursor-pointer ${
+                            isSelected
+                              ? 'text-slate-300 hover:text-white'
+                              : 'text-slate-400 hover:text-[#0B1F3A]'
+                          }`}
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteMeeting(m.id);
+                          }}
+                          aria-label={`Eliminar ${m.title}`}
+                          title="Eliminar reunión"
+                          className={`p-1 rounded cursor-pointer ${
+                            isSelected
+                              ? 'text-slate-300 hover:text-white'
+                              : 'text-slate-400 hover:text-rose-700'
+                          }`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })
+            )}
+          </div>
+
+          {/* Account Status in Sidebar Footer */}
+          <div className="p-4 border-t border-slate-100 bg-slate-50/60">
+            {!authReady ? (
+              <div className="text-xs text-slate-400">Verificando sesión...</div>
+            ) : user ? (
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-xs font-semibold text-[#0B1F3A] truncate">
+                    {user.displayName || 'Usuario conectado'}
+                  </div>
+                  <div className="text-[11px] text-slate-500 truncate">
+                    {user.email}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSignOut}
+                  aria-label="Cerrar sesión"
+                  title="Cerrar sesión"
+                  className="p-2 text-slate-500 hover:text-[#0B1F3A] hover:bg-slate-200/70 rounded-lg transition-colors shrink-0 cursor-pointer"
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleSignIn}
+                className="w-full h-9 px-3 inline-flex items-center justify-center gap-2 text-xs font-semibold text-[#0B1F3A] bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors cursor-pointer"
+              >
+                <LogIn className="w-3.5 h-3.5" />
+                <span>Acceder con correo UGR</span>
+              </button>
             )}
           </div>
         </aside>
@@ -444,15 +561,72 @@ export default function App() {
               role="alert"
               className="bg-white border border-rose-200 rounded-xl p-4 flex items-center justify-between gap-4"
             >
-              <p className="text-sm text-rose-800">{error}</p>
-              <button
-                type="button"
-                onClick={() => loadMeetings()}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#0B1F3A] bg-slate-100 rounded-lg hover:bg-slate-200 cursor-pointer"
+              <p className="text-sm text-rose-800 break-words">{error}</p>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setError(null)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  <span>Cerrar</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#0B1F3A] bg-slate-100 rounded-lg hover:bg-slate-200 cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Recargar</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Workspace View Mode Bar */}
+          {!isLoading && (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div
+                role="tablist"
+                aria-label="Cambiar vista del espacio de trabajo"
+                className="inline-flex items-center p-1 bg-white border border-slate-200 rounded-lg"
               >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>Reintentar</span>
-              </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={viewMode === 'detail'}
+                  onClick={() => setViewMode('detail')}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    viewMode === 'detail'
+                      ? 'bg-[#0B1F3A] text-white'
+                      : 'text-slate-600 hover:text-[#0B1F3A]'
+                  }`}
+                >
+                  <LayoutGrid className="w-3.5 h-3.5" />
+                  <span>Detalle de reunión</span>
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={viewMode === 'calendar'}
+                  onClick={() => setViewMode('calendar')}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    viewMode === 'calendar'
+                      ? 'bg-[#0B1F3A] text-white'
+                      : 'text-slate-600 hover:text-[#0B1F3A]'
+                  }`}
+                >
+                  <CalendarDays className="w-3.5 h-3.5" />
+                  <span>Vista mensual</span>
+                </button>
+              </div>
+
+              <span className="text-xs text-slate-500 tabular-nums">
+                {meetings.length}{' '}
+                {meetings.length === 1
+                  ? 'reunión registrada'
+                  : 'reuniones registradas'}
+              </span>
             </div>
           )}
 
@@ -462,22 +636,55 @@ export default function App() {
               <div className="bg-white border border-slate-200/90 rounded-xl p-6 h-72 animate-pulse" />
               <div className="bg-white border border-slate-200/90 rounded-xl p-6 h-64 animate-pulse" />
             </div>
+          ) : viewMode === 'calendar' ? (
+            <MonthlyCalendarView
+              meetings={meetings}
+              activeMeetingId={activeMeetingId}
+              currentUserUid={user?.uid ?? null}
+              onOpenMeeting={(meetingId) => {
+                setActiveMeetingId(meetingId);
+                setSelectedSlotId(null);
+                setViewMode('detail');
+              }}
+              onEditMeeting={(meeting) => handleOpenEditMeeting(meeting)}
+              onCreateMeetingOnDate={(date) => handleOpenNewMeeting(date)}
+            />
           ) : !activeMeeting ? (
             <div className="bg-white border border-slate-200/90 rounded-xl p-12 text-center">
               <h1 className="text-xl font-semibold text-[#0B1F3A]">
                 Sin reuniones activas
               </h1>
               <p className="mt-2 text-sm text-slate-500 max-w-md mx-auto">
-                Crea una nueva reunión para definir las franjas horarias y recopilar la disponibilidad de tu equipo.
+                Crea una nueva reunión para definir las franjas horarias y compartir el enlace con los participantes en tiempo real.
               </p>
-              <button
-                type="button"
-                onClick={() => setIsNewMeetingOpen(true)}
-                className="mt-6 inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-[#0B1F3A] rounded-lg hover:bg-[#132F54] cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>Crear primera reunión</span>
-              </button>
+              <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsHelpOpen(true)}
+                  className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-[#0B1F3A] bg-white border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer"
+                >
+                  <HelpCircle className="w-4 h-4" />
+                  <span>Cómo funciona</span>
+                </button>
+                {!user && (
+                  <button
+                    type="button"
+                    onClick={handleSignIn}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-[#0B1F3A] bg-white border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer"
+                  >
+                    <LogIn className="w-4 h-4" />
+                    <span>Acceder con correo UGR</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => handleOpenNewMeeting()}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-[#0B1F3A] rounded-lg hover:bg-[#132F54] cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Crear primera reunión</span>
+                </button>
+              </div>
             </div>
           ) : (
             <>
@@ -505,7 +712,38 @@ export default function App() {
                     </p>
                   </div>
 
-                  <div className="flex items-center gap-2.5 shrink-0">
+                  <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                    {!user && (
+                      <button
+                        type="button"
+                        onClick={handleSignIn}
+                        className="inline-flex items-center gap-2 h-9 px-3.5 text-xs font-medium text-[#0B1F3A] bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-100 transition-colors whitespace-nowrap cursor-pointer"
+                      >
+                        <LogIn className="w-3.5 h-3.5" />
+                        <span>Acceder con correo UGR</span>
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => setIsHelpOpen(true)}
+                      className="md:hidden inline-flex items-center gap-1.5 h-9 px-3 text-xs font-medium text-[#0B1F3A] bg-white border border-slate-200 rounded-lg hover:bg-slate-50 cursor-pointer"
+                    >
+                      <HelpCircle className="w-3.5 h-3.5" />
+                      <span>Ayuda</span>
+                    </button>
+
+                    {isOrganizer && (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenEditMeeting(activeMeeting)}
+                        className="inline-flex items-center gap-1.5 h-9 px-3.5 text-xs font-medium text-[#0B1F3A] bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors whitespace-nowrap cursor-pointer"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                        <span>Editar reunión</span>
+                      </button>
+                    )}
+
                     <button
                       type="button"
                       onClick={handleCopyInviteLink}
@@ -519,7 +757,7 @@ export default function App() {
                       ) : (
                         <>
                           <Link2 className="w-3.5 h-3.5" />
-                          <span>Copiar enlace de invitación</span>
+                          <span>Copiar enlace</span>
                         </>
                       )}
                     </button>
@@ -533,7 +771,8 @@ export default function App() {
                       <CalendarCheck2 className="w-5 h-5 text-[#047857] shrink-0 mt-0.5" />
                       <div>
                         <div className="text-sm font-semibold text-[#064E3B]">
-                          Horario confirmado: {formatDateLong(confirmedConsensus.slot.date)} ·{' '}
+                          Horario confirmado:{' '}
+                          {formatDateLong(confirmedConsensus.slot.date)} ·{' '}
                           <span className="font-mono tabular-nums">
                             {confirmedConsensus.slot.startTime} –{' '}
                             {confirmedConsensus.slot.endTime}
@@ -559,44 +798,32 @@ export default function App() {
                   </div>
                 )}
 
-                {/* 4-Column Clinical Metric Strip */}
-                <div className="mt-6 pt-5 border-t border-slate-100 grid grid-cols-2 lg:grid-cols-4 gap-6">
+                {/* 3-Column Clinical Summary Strip */}
+                <div className="mt-5 pt-4 border-t border-slate-100 grid grid-cols-3 gap-6">
                   <div>
                     <div className="text-xs font-medium text-slate-500">
-                      Participantes activos
+                      Participantes
                     </div>
-                    <div className="mt-1 font-mono text-2xl font-semibold text-[#0B1F3A] tabular-nums">
+                    <div className="mt-0.5 font-mono text-xl font-semibold text-[#0B1F3A] tabular-nums">
                       {activeMeeting.participants.length}
                     </div>
                   </div>
 
                   <div>
                     <div className="text-xs font-medium text-slate-500">
-                      Mayor viabilidad grupal
+                      Mejor coincidencia
                     </div>
-                    <div className="mt-1 font-mono text-2xl font-semibold text-[#059669] tabular-nums">
+                    <div className="mt-0.5 font-mono text-xl font-semibold text-[#059669] tabular-nums">
                       {bestMatchPct}%
                     </div>
                   </div>
 
                   <div>
                     <div className="text-xs font-medium text-slate-500">
-                      Franjas sin incompatibles
+                      Estado
                     </div>
-                    <div className="mt-1 font-mono text-2xl font-semibold text-[#0B1F3A] tabular-nums">
-                      {conflictFreeCount}
-                      <span className="text-sm font-normal text-slate-400">
-                        /{consensusList.length}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="text-xs font-medium text-slate-500">
-                      Estado de convocatoria
-                    </div>
-                    <div className="mt-1 text-lg font-semibold text-[#0B1F3A] leading-8">
-                      {confirmedConsensus ? 'Horario fijado' : 'Recogiendo votos'}
+                    <div className="mt-0.5 text-base font-semibold text-[#0B1F3A] leading-7">
+                      {confirmedConsensus ? 'Confirmada' : 'Abierta'}
                     </div>
                   </div>
                 </div>
@@ -605,21 +832,23 @@ export default function App() {
               {/* 1. Availability Editor (Available / Adaptable / Unavailable) */}
               <AvailabilityEditorGrid
                 meeting={activeMeeting}
-                activeParticipant={activeParticipant}
-                onSelectParticipant={(id) => setActiveParticipantId(id)}
-                onOpenNewParticipant={() => setIsNewParticipantOpen(true)}
+                myParticipant={myParticipant}
+                currentUser={
+                  user
+                    ? {
+                        uid: user.uid,
+                        displayName: user.displayName,
+                        email: user.email,
+                      }
+                    : null
+                }
+                onSignIn={async () => {
+                  await handleSignIn();
+                }}
                 onSaveAvailability={handleSaveAvailability}
               />
 
-              {/* 2. Smooth Line Chart */}
-              <ConsensusCurveChart
-                meeting={activeMeeting}
-                consensusList={consensusList}
-                selectedSlotId={selectedSlotId}
-                onSelectSlot={(slotId) => setSelectedSlotId(slotId)}
-              />
-
-              {/* 3. Group Consensus Matrix + Top Recommendations */}
+              {/* 2. Group Consensus Matrix + Top Recommendations */}
               <GroupConsensusMatrix
                 meeting={activeMeeting}
                 consensusList={consensusList}
@@ -627,12 +856,11 @@ export default function App() {
                 onSelectSlot={(slotId) => setSelectedSlotId(slotId)}
               />
 
-              {/* 4. Participants Summary Table */}
+              {/* 3. Participants Summary Table */}
               <ParticipantsPanel
                 meeting={activeMeeting}
-                activeParticipantId={activeParticipant?.id ?? null}
-                onSelectParticipant={(id) => setActiveParticipantId(id)}
-                onOpenNewParticipant={() => setIsNewParticipantOpen(true)}
+                currentUserUid={user?.uid ?? null}
+                isOrganizer={isOrganizer}
                 onRemoveParticipant={handleRemoveParticipant}
               />
             </>
@@ -645,10 +873,11 @@ export default function App() {
         <SlidingSlotDrawer
           meeting={activeMeeting}
           consensus={selectedConsensus}
+          currentUserUid={user?.uid ?? null}
+          canConfirm={isOrganizer}
           onClose={() => setSelectedSlotId(null)}
           onConfirmSlot={handleConfirmSlot}
-          onSelectParticipantForEdit={(id) => {
-            setActiveParticipantId(id);
+          onScrollToMyAvailability={() => {
             document
               .getElementById('mi-disponibilidad')
               ?.scrollIntoView({ behavior: 'smooth' });
@@ -658,15 +887,18 @@ export default function App() {
 
       <NewMeetingDrawer
         isOpen={isNewMeetingOpen}
-        onClose={() => setIsNewMeetingOpen(false)}
+        editingMeeting={editingMeeting}
+        defaultDate={defaultNewMeetingDate}
+        onClose={() => {
+          setIsNewMeetingOpen(false);
+          setEditingMeeting(null);
+          setDefaultNewMeetingDate(null);
+        }}
         onCreateMeeting={handleCreateMeeting}
+        onUpdateMeeting={handleUpdateMeeting}
       />
 
-      <NewParticipantDrawer
-        isOpen={isNewParticipantOpen}
-        onClose={() => setIsNewParticipantOpen(false)}
-        onAddParticipant={handleAddParticipant}
-      />
+      <HelpDrawer isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
     </div>
   );
 }
